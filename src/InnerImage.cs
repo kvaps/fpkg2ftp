@@ -224,6 +224,35 @@ internal sealed class InnerImage : IDisposable
         }
     }
 
+    /// <summary>
+    /// Writes <paramref name="file"/>'s content from byte <paramref name="start"/> on, for resuming
+    /// an interrupted copy. Only a contiguous plain file can start in the middle; for any other
+    /// (and for start 0) this is <see cref="CopyFile"/>. Returns the offset it actually started at.
+    /// (fpkg2ftp addition.)
+    /// </summary>
+    public long CopyFileFrom(PfsReader.File file, Stream dest, long start, Action<long>? progress = null,
+                             int chunkSize = 32 << 20)
+    {
+        bool contiguous = !file.flags.HasFlag(InodeFlags.compressed) && file.blocks == null;
+        if (start <= 0 || start >= file.size || !contiguous)
+        {
+            CopyFile(file, dest, progress, chunkSize);
+            return 0;
+        }
+        long remaining = file.size - start, pos = file.offset + start;
+        if (file.offset < 0 || file.offset + file.size > LogicalSize)
+            throw new InvalidDataException($"file extent [0x{file.offset:X},+0x{file.size:X}) lies outside the logical image (0x{LogicalSize:X}).");
+        while (remaining > 0)
+        {
+            int n = (int)Math.Min(remaining, chunkSize);
+            var chunk = _blocks.DecompressRange(pos, n);
+            dest.Write(chunk, 0, n);
+            pos += n; remaining -= n;
+            progress?.Invoke(n);
+        }
+        return start;
+    }
+
     public void Dispose()
     {
         _pfsImage?.Dispose();

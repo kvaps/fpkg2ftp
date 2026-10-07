@@ -13,6 +13,7 @@ using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text.Json;
+using System.Threading;
 using FluentFTP;
 using LibProsperoPkg.PFS;
 using LibProsperoPkg.PKG;
@@ -34,6 +35,7 @@ static class Program
         public string Passcode = new('0', 32);
         public bool Overwrite;
         public bool List;
+        public int Retries = 5;
     }
 
     sealed record Item(string Path, long Size, PfsReader.File? Inner, string? Local);
@@ -49,6 +51,8 @@ static class Program
           --root PATH        parent folder for the default target (default /data/homebrew)
           --passcode HEX32   package passcode (default 32 zeros)
           --overwrite        upload every file again, even one already there at the right size
+          --retries N        reconnect and carry on this many times after a dropped
+                             connection (default 5)
           --list             only list what the package holds, upload nothing
         """;
 
@@ -122,6 +126,7 @@ static class Program
                 case "--root": o.Root = Next(ref i); break;
                 case "--passcode": o.Passcode = Next(ref i); break;
                 case "--overwrite": o.Overwrite = true; break;
+                case "--retries": o.Retries = int.Parse(Next(ref i)); break;
                 case "--list": o.List = true; break;
                 default:
                     if (args[i].StartsWith('-') || o.Package != "") throw new ArgumentException($"unexpected argument {args[i]}");
@@ -213,9 +218,14 @@ static class Program
             made.Add(dir);
         }
 
+        void Reconnect()
+        {
+            try { ftp.Disconnect(); } catch (Exception) { }
+            ftp.Connect();
+        }
+
         var clock = Stopwatch.StartNew();
         long done = 0, sent = 0;
-        int skipped = 0;
         var lastReport = TimeSpan.Zero;
         void Report(string path, bool force = false)
         {
@@ -226,40 +236,65 @@ static class Program
             Console.Write($"\r{pct,5:F1}%  {done / 1e9,7:F2}/{total / 1e9:F2} GB  {mbps,6:F1} MB/s  {Shorten(path),-50}");
         }
 
+        int skipped = 0, resumed = 0;
         foreach (var item in items)
         {
             var remote = $"{dest}/{item.Path}";
-            EnsureDir(remote[..remote.LastIndexOf('/')]);
-            if (!o.Overwrite && ftp.GetFileSize(remote) == item.Size)
+            for (int attempt = 0; ; attempt++)
             {
-                done += item.Size;
-                skipped++;
-                Report(item.Path);
-                continue;
-            }
-            using (var upload = ftp.OpenWrite(remote, FtpDataType.Binary, checkIfFileExists: false))
-            {
-                if (item.Inner != null)
+                long counted = 0;
+                try
                 {
-                    inner.CopyFile(item.Inner, upload, n => { done += n; sent += n; Report(item.Path); });
+                    EnsureDir(remote[..remote.LastIndexOf('/')]);
+                    // FileZilla-style: same size means done, shorter means an interrupted
+                    // upload to carry on, anything else is uploaded again.
+                    long have = o.Overwrite ? -1 : ftp.GetFileSize(remote);
+                    if (have == item.Size)
+                    {
+                        done += item.Size;
+                        skipped++;
+                        Report(item.Path);
+                        break;
+                    }
+                    bool canResume = have > 0 && have < item.Size && item.Inner != null;
+                    using (var upload = canResume ? ftp.OpenAppend(remote, FtpDataType.Binary, checkIfFileExists: false)
+                                                  : ftp.OpenWrite(remote, FtpDataType.Binary, checkIfFileExists: false))
+                    {
+                        if (item.Inner != null)
+                        {
+                            long from = inner.CopyFileFrom(item.Inner, upload, canResume ? have : 0,
+                                                           n => { counted += n; done += n; sent += n; Report(item.Path); });
+                            if (from > 0) { resumed++; done += from; counted += from; }
+                        }
+                        else
+                        {
+                            using var local = File.OpenRead(item.Local!);
+                            local.CopyTo(upload);
+                            counted += item.Size; done += item.Size; sent += item.Size;
+                        }
+                    }
+                    var reply = ftp.GetReply();
+                    if (!reply.Success) throw new IOException($"upload of {remote} failed: {reply.Code} {reply.Message}");
+                    if (ftp.GetFileSize(remote) != item.Size)
+                        throw new IOException($"{remote} has the wrong size on the console after the upload");
+                    Report(item.Path);
+                    break;
                 }
-                else
+                catch (Exception ex) when (attempt < o.Retries && ex is IOException or TimeoutException
+                                               or FluentFTP.Exceptions.FtpException or System.Net.Sockets.SocketException)
                 {
-                    using var local = File.OpenRead(item.Local!);
-                    local.CopyTo(upload);
-                    done += item.Size;
-                    sent += item.Size;
+                    done -= counted;
+                    Console.WriteLine();
+                    Console.WriteLine($"{item.Path}: {ex.Message}; reconnecting ({attempt + 1}/{o.Retries})");
+                    Thread.Sleep(TimeSpan.FromSeconds(3 * (attempt + 1)));
+                    Reconnect();
                 }
             }
-            var reply = ftp.GetReply();
-            if (!reply.Success) throw new IOException($"upload of {remote} failed: {reply.Code} {reply.Message}");
-            if (ftp.GetFileSize(remote) != item.Size)
-                throw new IOException($"{remote} has the wrong size on the console after the upload");
-            Report(item.Path);
         }
         Report("", force: true);
         Console.WriteLine();
         if (skipped > 0) Console.WriteLine($"{skipped} file(s) were already there and were skipped");
+        if (resumed > 0) Console.WriteLine($"{resumed} file(s) were carried on from where an earlier upload stopped");
     }
 
     static string RealPath(string path)

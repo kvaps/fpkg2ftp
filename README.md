@@ -23,11 +23,16 @@ fpkg2ftp <game.pkg> --host <ps5 ip>
 | `--root PATH` | `/data/homebrew` | parent of the default target |
 | `--passcode HEX32` | 32 zeros | package passcode |
 | `--overwrite` | off | upload files again even if they are already there at the right size |
+| `--retries N` | 5 | reconnect and carry on this many times after a dropped connection |
 | `--list` | | print what the package holds, upload nothing |
 
 The title id comes from `sce_sys/param.json` (`titleId`, else the `PPSAxxxxx` part of
-`contentId`). A run that stopped can be started again: files already on the console at the
-right size are skipped. Each file's size is checked on the console after its upload.
+`contentId`).
+
+A run that stopped can be started again, and decides per file by its size on the console, as
+FileZilla does: the same size is skipped, a shorter file is carried on from where it stopped
+(`APPE`), anything else is uploaded again. A dropped connection is retried the same way
+without stopping the run. Each file's size is checked on the console after its upload.
 
 Only PS5 packages (FIH images, as PS5 UltraPack and LibProsperoPkg build them) are read; PS4
 packages are not.
@@ -53,5 +58,5 @@ GPL-3.0-or-later (`LICENSE`). Built from:
   UltraPack (SHA-256 `934e1d06d33796902ca949ac5abf65833af40a4a4caa5e356847ba1ccdf7486c`),
   see `NOTICE.LibProsperoPkg`.
 - `src/InnerImage.cs` from PS5 UltraPack's `ffpfsc-pkg-tool` (knutwurst/ps5-ultrapack,
-  commit 9a5131d), unchanged.
+  commit 9a5131d), with one method added for resuming (`CopyFileFrom`).
 - FluentFTP (MIT), BCnEncoder.Net and CommunityToolkit.HighPerformance (MIT), from NuGet.

@@ -8,6 +8,25 @@ it is decoded. Only the `sce_sys` metadata, which the package keeps in its CNT e
 outside the inner image, passes through a small temporary folder. The result is the same
 `/app0` tree as `ffpfsc-pkg-tool extract-inner` from PS5 UltraPack writes, byte for byte.
 
+## Download
+
+Self-contained binaries, no .NET needed, are on the
+[releases page](https://github.com/kvaps/fpkg2ftp/releases):
+
+| Archive | System |
+|---|---|
+| `fpkg2ftp-*-osx-arm64.tar.gz` | macOS on Apple Silicon |
+| `fpkg2ftp-*-linux-x64.tar.gz` | Linux x86_64 |
+| `fpkg2ftp-*-linux-arm64.tar.gz` | Linux ARM64 |
+| `fpkg2ftp-*-win-x64.zip` | Windows x64 |
+
+On Linux the binary needs the system's OpenSSL (`libssl3` or `libssl1.1`), which .NET uses
+for AES; without it the tool stops with "No usable version of libssl was found". On macOS the
+first run may be blocked by Gatekeeper: `xattr -d com.apple.quarantine fpkg2ftp`.
+
+There is no build for Intel Macs: the macOS x64 build is stopped by the system as soon as it
+decrypts anything ("loading libcrypto in an unsafe way").
+
 ## Usage
 
 ```sh
